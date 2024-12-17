@@ -1,0 +1,273 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+		<title>Telegram MTProto Proxy link generator</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="canonical" href="http://seriyps.ru/mtpgen.html"/>
+        <script>
+         function $$(query, context) {
+             return Array.prototype.slice.call(
+                 (context || document).querySelectorAll(query)
+             );
+         }
+         // Convert a hex string to a byte array
+         function hexToBytes(hex) {
+             for (var bytes = [], c = 0; c < hex.length; c += 2)
+                 bytes.push(parseInt(hex.substr(c, 2), 16));
+             return bytes;
+         }
+
+         // Convert a byte array to a hex string
+         function bytesToHex(bytes) {
+             for (var hex = [], i = 0; i < bytes.length; i++) {
+                 var current = bytes[i] < 0 ? bytes[i] + 256 : bytes[i];
+                 hex.push((current >>> 4).toString(16));
+                 hex.push((current & 0xF).toString(16));
+             }
+             return hex.join("");
+         }
+
+         function is_hex(str) {
+             return /^[0-9a-f]+$/.test(str)
+         }
+
+         // Convert a byte array to base64 string
+         function bytesToBase64(data) {
+             var str = String.fromCharCode.apply(null,data);
+             return btoa(str).replace(/.{76}(?=.)/g,'$&\n');
+         }
+         function base64ToBytes(str) {
+             return atob(str);
+         }
+         // Convert a byte array to urlsafe base64 string
+         function bytesToUrlSafeBase64(data) {
+             return bytesToBase64(data).replaceAll("+", "-").replaceAll("/", "_");
+         }
+         function urlSafeBase64ToBytes(str) {
+             return base64ToBytes(str.replaceAll("-", "+").replaceAll("_", "/"))
+         }
+         // Parse query string to object
+         function parseQuery(queryString) {
+             var query = {};
+             var pairs = queryString.split('&');
+             for (var i = 0; i < pairs.length; i++) {
+                 var pair = pairs[i].split('=');
+                 query[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1] || '');
+             }
+             return query;
+         }
+         // Random integer
+         function getRandomInt(max) {
+             return Math.floor(Math.random() * Math.floor(max));
+         }
+         function setUrl(id, url) {
+             var el = $$(id)[0];
+             el.href = url;
+             el.innerText = url;
+         }
+         function show(id, val) {
+             var el = $$(id)[0];
+             el.innerText = val;
+         }
+         function parse(url) {
+             var p = url.split("://");
+             var proto = p[0];
+             if (!(proto == "tg" || proto == "https")) {
+                 alert("invalid URL protocol: " + proto);
+                 return false
+             };
+             p = p[1].split("?");
+             var host_or_path = p[0];
+             if (proto == "tg" && host_or_path != "proxy") {
+                 alert("invalid path: " + host_or_path);
+                 return false
+             } else if (proto == "https" && host_or_path != "t.me/proxy") {
+                 alert("invalid path: " + host_or_path);
+                 return false
+             }
+             var query = parseQuery(p[1]);
+             var missing = ["server", "port", "secret"].filter(
+                 (field) => !query.hasOwnProperty(field));
+             if (missing.length) {
+                 alert("Missing: " + missing);
+                 return false
+             }
+             var s = query.secret;
+             var hex_secret, protocol, tls_domain = "";
+             if (s.length == 32 && is_hex(s)) {
+                 protocol = "Normal";
+                 hex_secret = s
+             } else if (s.length == 34 && s.startsWith("dd") && is_hex(s)) {
+                 protocol = "Secure";
+                 hex_secret = s.slice(-32)
+             } else if (s.length > 34 && s.startsWith("ee") && is_hex(s)) {
+                 protocol = "Fake-TLS, hex secret";
+                 hex_secret = s.slice(2, 34);
+                 tls_domain = String.fromCharCode.apply(null, hexToBytes(s.slice(34)))
+             } else if (s.startsWith("7")) {
+                 protocol = "Fake-TLS";
+                 var bin_secret;
+                 if(/^[0-9a-zA-Z_=-]+$/.test(s)) { // urlsafe base64
+                     bin_secret = urlSafeBase64ToBytes(s)
+                     protocol += ", URL-safe base64 secret"
+                 } else if (/^[0-9a-zA-Z\+\/=]+$/.test(s)) { // normal base64
+                     bin_secret = base64ToBytes(s)
+                     protocol += ", base64 sectet"
+                 } else {
+                     alert("Invalid secret: " + s);
+                     return false
+                 }
+                 hex_secret = bytesToHex(
+                     Array.from(bin_secret.slice(1, 17), c => c.charCodeAt(0)));
+                 tls_domain = bin_secret.slice(17)
+             } else {
+                 alert("Invalid secret: " + s)
+             }
+             return {protocol: protocol,
+                     server: query.server,
+                     port: query.port,
+                     secret: hex_secret,
+                     domain: tls_domain}
+         }
+         document.addEventListener("DOMContentLoaded",  function() {
+             $$("#generate")[0].onclick = function() {
+                 var form = $$("#generator-form")[0];
+                 var server = form.server.value;
+                 var port = form.port.value;
+                 var secret = form.secret.value;
+                 var tls_domain = form.domain.value;
+                 var url_type = $$('input[name="url_type"]:checked', form)[0].value;
+
+                 var secret_bytes = hexToBytes(secret);
+                 var dd_secret = "dd" + secret
+                 var domain_bytes = Array.from(tls_domain).map( (c) => c.charCodeAt(0) );
+                 var tls_bytes = hexToBytes("ee" + secret).concat(domain_bytes);
+                 var tg_prefix = url_type + "proxy?server=" + server + "&port=" + port + "&secret=";
+                 
+                 setUrl("#url-normal", tg_prefix + secret);
+                 setUrl("#url-dd", tg_prefix + dd_secret);
+                 setUrl("#url-tls-hex", tg_prefix + encodeURIComponent(bytesToHex(tls_bytes)));
+                 setUrl("#url-tls-b64", tg_prefix + bytesToBase64(tls_bytes)); // encodeURIComponent(bytesToBase64(tls_bytes)));
+                 setUrl("#url-tls-safeb64", tg_prefix + bytesToUrlSafeBase64(tls_bytes)); // encodeURIComponent(bytesToUrlSafeBase64(tls_bytes)));
+             }
+             $$("#rand-secret")[0].onclick = function() {
+                 var rand_hex = [];
+                 for (var i = 0; i < 16; i++) {
+                     rand_hex.push(getRandomInt(256));
+                 }
+                 $$("#secret")[0].value = bytesToHex(rand_hex);
+             }
+             $$("#parse")[0].onclick = function() {
+                 var form = $$("#parser-form")[0];
+                 var link = form["parse-link"].value;  // https://t.me/proxy?...
+                 var parsed = parse(link);
+                 show("#parse-protocol", parsed.protocol);
+                 show("#parse-server", parsed.server);
+                 show("#parse-port", parsed.port);
+                 show("#parse-hex-secret", parsed.secret);
+                 show("#parse-domain", parsed.domain);
+             }
+             $$("#parse-and-generate")[0].onclick = function() {
+                 var form = $$("#parser-form")[0];
+                 var link = form["parse-link"].value;  // https://t.me/proxy?...
+                 var parsed = parse(link);
+                 var form = $$("#generator-form")[0];
+                 form.server.value = parsed.server;
+                 form.port.value = parsed.port;
+                 form.secret.value = parsed.secret;
+                 form.domain.value = parsed.domain;
+                 $$("#generate")[0].onclick();
+                 show("#parse-protocol", parsed.protocol);
+                 show("#parse-server", parsed.server);
+                 show("#parse-port", parsed.port);
+                 show("#parse-hex-secret", parsed.secret);
+                 show("#parse-domain", parsed.domain);
+             }
+         })
+        </script>
+	</head>
+	<body>
+        <h1>Telegram MTProto Proxy link generator</h1>
+        <form id="generator-form">
+            <div>
+                <nobr>
+                    <label for="server">Server:</label>
+                    <input id="server" name="server" placeholder="1.2.3.4" />
+                </nobr>
+                <nobr>
+                    <label for="port">Port:</label>
+                    <input id="port" name="port" placeholder="443" />
+                </nobr>
+                <nobr>
+                    <label for="secret">Secret:</label>
+                    <input type="button" id="rand-secret" value="rand" style="padding: 0" />
+                    <input id="secret" name="secret" placeholder="d0d6e111bada5511fcce9584deadbeef" size="28" />
+                </nobr>
+                <nobr>
+                    <label for="domain">Fake-TLS domain:</label>
+                    <input id="domain" name="domain" placeholder="google.com" />
+                </nobr>
+                <nobr>
+                    <label for="tg">tg://</label>
+                    <input type="radio" id="tg" name="url_type" value="tg://" checked />
+                    <label for="tme">https://t.me</label>
+                    <input type="radio" id="tme" name="url_type" value="https://t.me/" />
+                </nobr>
+            </div>
+            <input id="generate" type="button" value="Generate" />
+        </form>
+        <h2>Links:</h2>
+        <div id="links">
+            <ul>
+                <li>
+                    Normal: <a id="url-normal" href="#"></a>
+                </li>
+                <li>
+                    Secure: <a id="url-dd" href="#"></a>
+                </li>
+                <li>
+                    Fake-TLS hex: <a id="url-tls-hex" href="#"></a>
+                </li>
+                <li>
+                    Fake-TLS URL-safe base64: <a id="url-tls-safeb64" href="#"></a>
+                </li>
+                <li>
+                    Fake-TLS base64: <a id="url-tls-b64" href="#"></a>
+                </li>
+            </ul>
+        </div>
+        <h1>Telegram MTProto Proxy link parser</h1>
+        <p>
+            Supports both <code>tg://proxy</code> and <code>https://t.me/proxy</code> links, all protocols and encodings (normal / <code>dd</code> / <code>ee</code> / <code>base64</code>).
+        </p>
+        <form id="parser-form">
+            <div>
+                <nobr>
+                    <label for="parse-link">Proxy link:</label>
+                    <input id="parse-link" name="parse-link"
+                           style="min-width: 50%"
+                           placeholder="https://t.me/proxy?server=google.com&amp;port=443&amp;secret=0000000000000000000000000000000" />
+                </nobr>
+            </div>
+            <input id="parse" type="button" value="Parse" />
+            <input id="parse-and-generate" type="button" value="Parse and copy to generator" />
+        </form>
+        <div id="parse-info">
+            <dl>
+                <dt>Protocol</dt>
+                <dd id="parse-protocol"></dd>
+                <dt>Server</dt>
+                <dd id="parse-server"></dd>
+                <dt>Port</dt>
+                <dd id="parse-port"></dd>
+                <dt>Hex secret</dt>
+                <dd id="parse-hex-secret"></dd>
+                <dt>Fake-TLS domain</dt>
+                <dd id="parse-domain"></dd>
+            </dl>
+        </div>
+    </body>
+</html>
+
