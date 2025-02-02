@@ -1,93 +1,97 @@
 #!/bin/bash
 
-LOCK_FILE="/var/lock/fail2ban_setup.lock"
-
-# Ensure script runs only once
-if [ -f "$LOCK_FILE" ]; then
-    echo "Fail2Ban setup script has already been executed. Exiting..."
+# Ensure you are running as root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "You need to run this script as root."
     exit 1
 fi
 
-touch "$LOCK_FILE"
+# Install Fail2Ban if not installed
+echo "Installing Fail2Ban..."
+apt update && apt install -y fail2ban
 
-# Update system and install Fail2Ban
-sudo apt update && sudo apt install -y fail2ban vnstat jq
-
-# Configure Fail2Ban Filters
-sudo bash -c 'cat > /etc/fail2ban/filter.d/udp_length.conf <<EOL
+# Create necessary filter files for UDP, ACK/SYN, and high data transfer
+echo "Creating filter for UDP high rate and length..."
+cat > /etc/fail2ban/filter.d/udp_high_rate_length.conf <<EOL
 [Definition]
-failregex = <HOST> .* UDP .* length ([1-9][0-9][0-9]|[1-9][0-9]{3,})
+failregex = .*UDP.*length (\d+).*rate (\d+)
 ignoreregex =
-EOL'
+EOL
 
-sudo bash -c 'cat > /etc/fail2ban/filter.d/ack_length.conf <<EOL
+echo "Creating filter for TCP ACK/SYN high rate and length..."
+cat > /etc/fail2ban/filter.d/tcp_ack_syn.conf <<EOL
 [Definition]
-failregex = <HOST> .* ACK .* length ([2-9][0-9][0-9]|[1-9][0-9]{3,})
+failregex = .*SYN.*ACK.*length (\d+).*rate (\d+)
 ignoreregex =
-EOL'
+EOL
 
-sudo bash -c 'cat > /etc/fail2ban/filter.d/high_bandwidth.conf <<EOL
+echo "Creating filter for high data transfer (over 50MB/s)..."
+cat > /etc/fail2ban/filter.d/high_data_transfer.conf <<EOL
 [Definition]
-failregex = .* SRC=<HOST> .* bytes=[5-9][0-9]{7,}
+failregex = .*DROP.*(.*).*length (\d+).*rate (\d+)
 ignoreregex =
-EOL'
+EOL
 
-# Configure Fail2Ban Jail
-sudo bash -c 'cat > /etc/fail2ban/jail.local <<EOL
-[udp_length]
-enabled = true
-port = all
-filter = udp_length
-logpath = /var/log/syslog
-maxretry = 3
-bantime = 3600
-findtime = 60
+# Configure custom jails for each filter in jail.local
+echo "Configuring jails in /etc/fail2ban/jail.local..."
 
-[ack_length]
-enabled = true
-port = all
-filter = ack_length
-logpath = /var/log/syslog
-maxretry = 3
-bantime = 3600
-findtime = 60
+cat >> /etc/fail2ban/jail.local <<EOL
 
-[high_bandwidth]
-enabled = true
-port = all
-filter = high_bandwidth
-logpath = /var/log/iptables.log
+[udp-high-rate-length]
+enabled  = true
+filter   = udp_high_rate_length
+action   = iptables[name=UDPHighRateLength, port=all, protocol=udp]
+logpath  = /var/log/syslog
 maxretry = 1
-bantime = 3600
-findtime = 10
-EOL'
+bantime  = 3600
+findtime = 600
 
-# Create Asymmetry Detection Script
-sudo bash -c 'cat > /usr/local/bin/check_asymmetry.sh <<EOL
-#!/bin/bash
-INTERFACE=eth0
-RX=\$(vnstat -i \$INTERFACE --json | jq ".interfaces[0].traffic.rx")
-TX=\$(vnstat -i \$INTERFACE --json | jq ".interfaces[0].traffic.tx")
-DIFF=\$(echo "\$TX - \$RX" | bc)
-THRESHOLD=50000000  # 50MB
+[tcp-ack-syn]
+enabled  = true
+filter   = tcp_ack_syn
+action   = iptables[name=TCPAckSyn, port=all, protocol=tcp]
+logpath  = /var/log/syslog
+maxretry = 1
+bantime  = 3600
+findtime = 600
 
-if [ \${DIFF#-} -gt \$THRESHOLD ]; then
-    echo "Asymmetry detected, banning IPs..."
-    sudo iptables -A INPUT -s \$(netstat -antup | grep ESTABLISHED | awk '{print \$5}' | cut -d: -f1 | sort | uniq) -j DROP
-fi
-EOL'
+[high-data-transfer]
+enabled  = true
+filter   = high_data_transfer
+action   = iptables[name=HighDataTransfer, port=all, protocol=all]
+logpath  = /var/log/syslog
+maxretry = 1
+bantime  = 3600
+findtime = 600
+EOL
 
-sudo chmod +x /usr/local/bin/check_asymmetry.sh
+# Configure iptables for high data transfer logging
+echo "Configuring iptables for high data transfer logging..."
+iptables -A INPUT -m limit --limit 1/s -j LOG --log-prefix "IPT high data transfer: "
 
-# Schedule the Asymmetry Detection Script
-(sudo crontab -l 2>/dev/null; echo "* * * * * /usr/local/bin/check_asymmetry.sh") | sudo crontab -
+# Whitelist Telegram IP ranges (from https://core.telegram.org/resources/cidr.txt)
+echo "Whitelisting Telegram IP ranges..."
+cidr_url="https://core.telegram.org/resources/cidr.txt"
+cidr_file="/tmp/telegram_cidr.txt"
 
-# Restart and Enable Fail2Ban
-sudo systemctl restart fail2ban
-sudo systemctl enable fail2ban
+# Download the Telegram CIDR file
+curl -s $cidr_url -o $cidr_file
 
-# Verify Status
-sudo fail2ban-client status
+# Loop through each CIDR block and add it to iptables whitelist
+while read -r cidr; do
+    # Skip empty lines and comments
+    if [[ ! -z "$cidr" && ! "$cidr" =~ ^# ]]; then
+        iptables -A INPUT -s "$cidr" -j ACCEPT
+        echo "Whitelisted $cidr"
+    fi
+done < $cidr_file
 
-echo "Fail2Ban installation and configuration completed."
-exit 0
+# Restart Fail2Ban to apply the changes
+echo "Restarting Fail2Ban..."
+systemctl restart fail2ban
+
+# Check Fail2Ban status
+echo "Checking Fail2Ban status..."
+fail2ban-client status
+
+echo "Script execution completed!"
