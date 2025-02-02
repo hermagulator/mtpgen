@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# Ensure you are running as root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "You need to run this script as root."
+    exit 1
+fi
+
+# Stop Fail2Ban service
+echo "Stopping Fail2Ban..."
+systemctl stop fail2ban
+
+# Delete all Fail2Ban jails
+echo "Deleting all Fail2Ban jails..."
+fail2ban-client stop all
+
+# Restart Fail2Ban to apply changes
+echo "Restarting Fail2Ban..."
+systemctl restart fail2ban
+
+# Flush all iptables rules
+echo "Flushing all iptables rules..."
+iptables -F
+
+# Delete all user-defined iptables chains
+echo "Deleting all user-defined iptables chains..."
+iptables -X
+
+# Remove Fail2Ban
+echo "Uninstalling Fail2Ban..."
+apt-get remove --purge -y fail2ban
+
+# Remove iptables if needed (optional)
+# echo "Uninstalling iptables..."
+# apt-get remove --purge -y iptables
+
+echo "All Fail2Ban and iptables rules have been deleted."
