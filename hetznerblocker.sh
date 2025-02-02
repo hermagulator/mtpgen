@@ -6,7 +6,6 @@ ip6tables -F
 
 # Block IPv4 ranges
 for ip in \
-for ip in \
 5.78.66.0/24 \
 5.78.121.0/24 \
 5.78.77.0/24 \
